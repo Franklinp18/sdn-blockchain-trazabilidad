@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Nexus | Gestión & Auditoría</title>
+
+  <!-- Tailwind (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <link rel="stylesheet" href="assets/css/base.css" />
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#4f46e5',
+            primaryHover: '#4338ca',
+            danger: '#ef4444',
+            dangerHover: '#dc2626',
+            success: '#10b981',
+          }
+        }
+      }
+    }
+  </script>
+</head>
+
+<body class="text-slate-800 antialiased h-screen flex flex-col overflow-hidden">
+  <!-- App container -->
+  <div id="app" class="flex-1 flex flex-col h-full relative"></div>
+
+  <!-- Modal overlay -->
+  <div id="modal-overlay" class="hidden fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+    <div id="modal-content" class="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden modal-enter"></div>
+  </div>
+
+  <!-- Toast container -->
+  <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+  <!-- JS (orden importa) -->
+  <script src="assets/js/config.js"></script>
+  <script src="assets/js/state.js"></script>
+
+  <script src="assets/js/ui/dom.js"></script>
+  <script src="assets/js/ui/toast.js"></script>
+  <script src="assets/js/ui/modal.js"></script>
+
+  <script src="assets/js/services/api.js"></script>
+
+  <script src="assets/js/views/login.js"></script>
+  <script src="assets/js/views/inventory.js"></script>
+  <script src="assets/js/views/invoices.js"></script>
+  <script src="assets/js/views/ledger.js"></script>
+  <script src="assets/js/views/dashboard.js"></script>
+
+  <script src="assets/js/app.js"></script>
+</body>
+</html>
+
