@@ -31,4 +31,3 @@ def fetch_all(sql: str, params: Tuple[Any, ...] = ()) -> List[Dict[str, Any]]:
             rows = cur.fetchall()
             cols = [d.name for d in cur.description]
             return [dict(zip(cols, r)) for r in rows]
-
