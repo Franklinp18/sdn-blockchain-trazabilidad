@@ -1,0 +1,181 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: nexus
+type: Opaque
+stringData:
+  POSTGRES_DB: nexusdb
+  POSTGRES_USER: nexus
+  POSTGRES_PASSWORD: nexuspass
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: nexus
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: nexus
+data:
+  001_init.sql: |
+    -- Roles/Users
+    CREATE TABLE IF NOT EXISTS users (
+      username TEXT PRIMARY KEY,
+      password TEXT NOT NULL DEFAULT '',
+      role     TEXT NOT NULL CHECK (role IN ('bodega','oficina','admin'))
+    );
+
+    -- Inventory
+    CREATE TABLE IF NOT EXISTS inventory (
+      id       SERIAL PRIMARY KEY,
+      date     DATE NOT NULL,
+      item     TEXT NOT NULL,
+      category TEXT NOT NULL,
+      type     TEXT NOT NULL,
+      qty      INT  NOT NULL,
+      username TEXT NOT NULL REFERENCES users(username),
+      hash     TEXT NOT NULL
+    );
+
+    -- Invoices
+    CREATE TABLE IF NOT EXISTS invoices (
+      id       SERIAL PRIMARY KEY,
+      date     DATE NOT NULL,
+      client   TEXT NOT NULL,
+      total    NUMERIC(12,2) NOT NULL,
+      username TEXT NOT NULL REFERENCES users(username),
+      hash     TEXT NOT NULL
+    );
+
+    -- Ledger (blockchain simple)
+    CREATE TABLE IF NOT EXISTS ledger (
+      id        SERIAL PRIMARY KEY,
+      ts        TIMESTAMPTZ NOT NULL,
+      actor     TEXT NOT NULL,
+      action    TEXT NOT NULL,
+      tx_id     TEXT NOT NULL,
+      prev_hash TEXT NOT NULL,
+      hash      TEXT NOT NULL
+    );
+
+    -- Seed users (password vacío por ahora)
+    INSERT INTO users(username,password,role) VALUES
+      ('bodega','', 'bodega'),
+      ('oficina','', 'oficina'),
+      ('admin','',  'admin')
+    ON CONFLICT (username) DO NOTHING;
+
+    -- Seed inventory
+    INSERT INTO inventory(date,item,category,type,qty,username,hash) VALUES
+      ('2023-10-24','Fertilizante NPK','Fertilizante','Entrada',50,'bodega','8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4'),
+      ('2023-10-25','Semilla Cacao CCN-51','Semilla','Salida',12,'bodega','e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+    ON CONFLICT DO NOTHING;
+
+    -- Seed invoices
+    INSERT INTO invoices(date,client,total,username,hash) VALUES
+      ('2023-10-24','Comprador Local',4500.00,'oficina','a1b2c3d4e5f67890123456789abcdef1234567890abcdef1234567890abcde'),
+      ('2023-10-25','Consumidor Final',120.50,'oficina','f1e2d3c4b5a69870123456789abcdef1234567890abcdef1234567890abcde')
+    ON CONFLICT DO NOTHING;
+
+    -- Seed ledger (genesis + 2 bloques)
+    INSERT INTO ledger(ts,actor,action,tx_id,prev_hash,hash) VALUES
+      ('2023-10-24T08:30:00Z','system','INIT_GENESIS','TX_0000','0000000000000000','INIT_HASH_GENESIS_BLOCK_SECURE'),
+      ('2023-10-24T09:15:22Z','bodega','INV_ADD','TX_3921','INIT_HASH_GENESIS_BLOCK_SECURE','8f434346648f6b96df89dda901c5'),
+      ('2023-10-25T10:00:01Z','oficina','INV_CREATE','TX_4022','8f434346648f6b96df89dda901c5','a1b2c3d4e5f67890123456789abc')
+    ON CONFLICT DO NOTHING;
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: nexus
+  labels:
+    app.kubernetes.io/name: nexus
+    app.kubernetes.io/component: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nexus
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nexus
+        app.kubernetes.io/component: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+              name: pg
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command: ["sh","-lc","pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 8
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["sh","-lc","pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 6
+      volumes:
+        - name: pgdata
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+        - name: init
+          configMap:
+            name: postgres-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: nexus
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: nexus
+    app.kubernetes.io/component: postgres
+  ports:
+    - name: pg
+      port: 5432
+      targetPort: 5432
