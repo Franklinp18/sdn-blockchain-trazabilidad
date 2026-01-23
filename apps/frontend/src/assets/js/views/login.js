@@ -24,7 +24,7 @@ views.login = {
             <div>
               <label class="block text-xs font-semibold text-slate-500 uppercase mb-1">Contraseña</label>
               <input type="password" id="password" class="w-full px-4 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm"
-                placeholder="••••••••">
+                placeholder="(vacía si aplica)">
             </div>
 
             <button id="btnLogin" type="submit"
@@ -35,7 +35,7 @@ views.login = {
 
           <div class="mt-6 pt-6 border-t border-slate-100 text-center">
             <p class="text-xs text-slate-400">
-              Usuarios demo:
+              Usuarios:
               <span class="font-mono bg-slate-100 px-1 rounded">bodega</span>,
               <span class="font-mono bg-slate-100 px-1 rounded">oficina</span>,
               <span class="font-mono bg-slate-100 px-1 rounded">admin</span>
@@ -59,17 +59,28 @@ views.login = {
       const btn = $("#btnLogin");
       const original = btn.innerHTML;
 
+      // limpia estilo de error
+      $("#username")?.classList.remove("border-red-500");
+
       try {
         btn.innerHTML = `<i data-lucide="loader-2" class="w-5 h-5 animate-spin mx-auto"></i>`;
         lucide.createIcons();
 
+        // Login
         const res = await api.login(u, p);
         session.set(res.role, res.token);
 
         toast.show(`Bienvenido, ${roles[res.role].name}`, "success");
         window.appRender();
       } catch (err) {
-        toast.show(err.message || "Error al iniciar sesión", "error");
+        // Diferencia: API caída vs credenciales
+        try {
+          await api.health();
+          toast.show(err.message || "Error al iniciar sesión", "error");
+        } catch {
+          toast.show("API no disponible. Prueba /api/health y revisa el proxy del frontend.", "error");
+        }
+
         $("#username")?.classList.add("border-red-500");
       } finally {
         btn.innerHTML = original;
@@ -78,4 +89,3 @@ views.login = {
     });
   }
 };
-
