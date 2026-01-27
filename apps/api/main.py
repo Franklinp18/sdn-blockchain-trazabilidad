@@ -28,6 +28,9 @@ TOKEN_TTL_SECONDS = int(os.getenv("NEXUS_TOKEN_TTL", "86400"))
 RoleKey = Literal["bodega", "oficina", "admin"]
 SESSIONS: Dict[str, Dict[str, object]] = {}
 
+InventoryStatus = Literal["AVAILABLE", "RESERVED", "SOLD"]
+InvoiceStatus = Literal["PENDING_APPROVAL", "APPROVED", "REJECTED"]
+
 
 class LoginRequest(BaseModel):
     username: str
@@ -53,9 +56,18 @@ class InventoryCreate(BaseModel):
 
 
 class InvoiceCreate(BaseModel):
+    # ahora oficina emite factura DESDE un lote
+    inventory_id: int = Field(..., ge=1, description="ID del lote/inventario a facturar")
     date: str = Field(..., description="YYYY-MM-DD")
     client: str
     total: float
+
+
+class ApproveResponse(BaseModel):
+    ok: bool
+    invoice_id: int
+    status: InvoiceStatus
+    hash: Optional[str] = None
 
 
 # -----------------------------
@@ -146,20 +158,14 @@ def verify_chain_full(cur) -> bool:
     if not rows:
         return True
 
-    # Validaremos solo bloques "reales" (sha256 de 64 hex).
     real = [r for r in rows if is_sha256_hex(str(r[7]))]
-
-    # Si aún no hay bloques reales, no podemos verificar criptográficamente.
     if not real:
         return True
 
-    # 1) Encadenamiento SOLO entre bloques reales:
-    #    cada prev_hash de un bloque real debe ser igual al hash del bloque real anterior.
     for i in range(1, len(real)):
         if str(real[i][5]) != str(real[i - 1][7]):
             return False
 
-    # 2) Recalcular hash SHA256 y comparar (estricto)
     for r in real:
         ts: datetime = r[1]
         ts_iso = ts.isoformat()
@@ -178,9 +184,47 @@ def verify_chain_full(cur) -> bool:
 
 
 # -----------------------------
+# Schema migration (safe)
+# -----------------------------
+def ensure_schema() -> None:
+    with psycopg.connect(dsn()) as conn:
+        with conn.cursor() as cur:
+            # ledger.payload_json (tu API ya lo usa)
+            cur.execute("ALTER TABLE ledger ADD COLUMN IF NOT EXISTS payload_json TEXT;")
+
+            # inventory.status
+            cur.execute("ALTER TABLE inventory ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'AVAILABLE';")
+
+            # invoices: status + relación a inventory
+            cur.execute("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'APPROVED';")
+            cur.execute("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS inventory_id INT;")
+            # FK si no existe (Postgres no tiene IF NOT EXISTS para FK, así que lo intentamos)
+            try:
+                cur.execute(
+                    """
+                    ALTER TABLE invoices
+                    ADD CONSTRAINT invoices_inventory_fk
+                    FOREIGN KEY (inventory_id) REFERENCES inventory(id);
+                    """
+                )
+            except Exception:
+                conn.rollback()
+                # si ya existe o falla por datos previos, seguimos (no es crítico para arrancar)
+            else:
+                conn.commit()
+
+        conn.commit()
+
+
+# -----------------------------
 # App
 # -----------------------------
-app = FastAPI(title="Nexus API", version="0.4.0")
+app = FastAPI(title="Nexus API", version="0.5.0")
+
+
+@app.on_event("startup")
+def _startup():
+    ensure_schema()
 
 
 @app.get("/health")
@@ -210,14 +254,19 @@ def login(body: LoginRequest):
     return LoginResponse(role=role, token=issue_token(role))
 
 
+# -----------------------------
+# Bodega
+# -----------------------------
 @app.get("/inventory")
 def get_inventory(authorization: Optional[str] = Header(default=None)):
     role = require_auth(authorization)
     require_role(role, ["bodega"])
+    # bodega solo ve lo disponible (los reservados/vendidos ya no deben salir)
     return fetch_all(
         """
         SELECT id, date, item, category, type, qty, username AS "user", hash
         FROM inventory
+        WHERE status = 'AVAILABLE'
         ORDER BY id;
         """
     )
@@ -228,32 +277,36 @@ def create_inventory(body: InventoryCreate, authorization: Optional[str] = Heade
     role = require_auth(authorization)
     require_role(role, ["bodega"])
 
+    # Crear lote: NO ledger aún. Queda AVAILABLE y hash PENDING
     with psycopg.connect(dsn()) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO inventory(date, item, category, type, qty, username, hash)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO inventory(date, item, category, type, qty, username, hash, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'AVAILABLE')
                 RETURNING id;
                 """,
                 (body.date, body.item, body.category, body.type, body.qty, role, "PENDING"),
             )
             inv_id = int(cur.fetchone()[0])
-            tx_id = make_tx_id("INV", inv_id)
+            return {"ok": True, "id": inv_id, "status": "AVAILABLE"}
 
-            payload = {
-                "inventory_id": inv_id,
-                "date": body.date,
-                "item": body.item,
-                "category": body.category,
-                "type": body.type,
-                "qty": body.qty,
-                "user": role,
-            }
-            block_hash = insert_ledger(cur, actor=role, action="INVENTORY_CREATE", tx_id=tx_id, payload=payload)
 
-            cur.execute("UPDATE inventory SET hash = %s WHERE id = %s;", (block_hash, inv_id))
-            return {"ok": True, "id": inv_id, "tx_id": tx_id, "hash": block_hash}
+# -----------------------------
+# Oficina
+# -----------------------------
+@app.get("/lots/available")
+def lots_available(authorization: Optional[str] = Header(default=None)):
+    role = require_auth(authorization)
+    require_role(role, ["oficina"])
+    return fetch_all(
+        """
+        SELECT id, date, item, category, type, qty, username AS "user", hash
+        FROM inventory
+        WHERE status = 'AVAILABLE'
+        ORDER BY id;
+        """
+    )
 
 
 @app.get("/invoices")
@@ -262,9 +315,9 @@ def get_invoices(authorization: Optional[str] = Header(default=None)):
     require_role(role, ["oficina"])
     rows = fetch_all(
         """
-        SELECT id, date, client, total, username AS "user", hash
+        SELECT id, inventory_id, date, client, total, status, username AS "user", hash
         FROM invoices
-        ORDER BY id;
+        ORDER BY id DESC;
         """
     )
     for r in rows:
@@ -280,30 +333,147 @@ def create_invoice(body: InvoiceCreate, authorization: Optional[str] = Header(de
 
     with psycopg.connect(dsn()) as conn:
         with conn.cursor() as cur:
+            # 1) validar lote disponible
+            cur.execute("SELECT status, qty, item, category FROM inventory WHERE id = %s;", (body.inventory_id,))
+            inv = cur.fetchone()
+            if not inv:
+                raise HTTPException(status_code=404, detail="Lote no encontrado")
+            if str(inv[0]) != "AVAILABLE":
+                raise HTTPException(status_code=409, detail="El lote ya no está disponible")
+
+            # 2) crear factura pendiente
             cur.execute(
                 """
-                INSERT INTO invoices(date, client, total, username, hash)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO invoices(inventory_id, date, client, total, status, username, hash)
+                VALUES (%s, %s, %s, %s, 'PENDING_APPROVAL', %s, %s)
                 RETURNING id;
                 """,
-                (body.date, body.client, body.total, role, "PENDING"),
+                (body.inventory_id, body.date, body.client, body.total, role, "PENDING"),
             )
             invc_id = int(cur.fetchone()[0])
-            tx_id = make_tx_id("BILL", invc_id)
 
+            # 3) reservar lote para que no aparezca en bodega
+            cur.execute("UPDATE inventory SET status = 'RESERVED' WHERE id = %s;", (body.inventory_id,))
+
+            return {"ok": True, "id": invc_id, "status": "PENDING_APPROVAL"}
+
+
+# -----------------------------
+# Admin (pendientes + aprobación)
+# -----------------------------
+@app.get("/admin/pending")
+def admin_pending(authorization: Optional[str] = Header(default=None)):
+    role = require_auth(authorization)
+    require_role(role, ["admin"])
+    return fetch_all(
+        """
+        SELECT i.id,
+               i.inventory_id,
+               i.date,
+               i.client,
+               i.total,
+               i.status,
+               i.username AS "user",
+               i.hash,
+               inv.item AS lot_item,
+               inv.category AS lot_category,
+               inv.qty AS lot_qty,
+               inv.status AS lot_status
+        FROM invoices i
+        LEFT JOIN inventory inv ON inv.id = i.inventory_id
+        WHERE i.status = 'PENDING_APPROVAL'
+        ORDER BY i.id DESC;
+        """
+    )
+
+
+@app.post("/admin/invoices/{invoice_id}/approve", response_model=ApproveResponse)
+def admin_approve(invoice_id: int, authorization: Optional[str] = Header(default=None)):
+    role = require_auth(authorization)
+    require_role(role, ["admin"])
+
+    with psycopg.connect(dsn()) as conn:
+        with conn.cursor() as cur:
+            # leer invoice + lote
+            cur.execute(
+                """
+                SELECT i.id, i.inventory_id, i.date, i.client, i.total, i.status,
+                       inv.item, inv.category, inv.qty, inv.status
+                FROM invoices i
+                LEFT JOIN inventory inv ON inv.id = i.inventory_id
+                WHERE i.id = %s;
+                """,
+                (invoice_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Factura no encontrada")
+
+            inv_id = row[1]
+            inv_status = str(row[9] or "")
+            inv_item = row[6]
+            inv_cat = row[7]
+            inv_qty = row[8]
+
+            if str(row[5]) != "PENDING_APPROVAL":
+                raise HTTPException(status_code=409, detail="La factura no está pendiente")
+
+            if inv_id is None:
+                raise HTTPException(status_code=409, detail="Factura sin lote asociado")
+
+            if inv_status not in ("RESERVED", "AVAILABLE"):
+                raise HTTPException(status_code=409, detail="El lote no está en estado aprobable")
+
+            # 1) aprobar + marcar lote como SOLD
+            cur.execute("UPDATE invoices SET status = 'APPROVED' WHERE id = %s;", (invoice_id,))
+            cur.execute("UPDATE inventory SET status = 'SOLD' WHERE id = %s;", (inv_id,))
+
+            # 2) escribir blockchain (ledger) recién aquí
+            tx_id = make_tx_id("APPROVE", invoice_id)
             payload = {
-                "invoice_id": invc_id,
-                "date": body.date,
-                "client": body.client,
-                "total": float(body.total),
-                "user": role,
+                "invoice_id": invoice_id,
+                "inventory_id": inv_id,
+                "date": str(row[2]),
+                "client": str(row[3]),
+                "total": float(row[4]),
+                "lot": {"item": inv_item, "category": inv_cat, "qty": inv_qty},
+                "approved_by": role,
             }
-            block_hash = insert_ledger(cur, actor=role, action="INVOICE_CREATE", tx_id=tx_id, payload=payload)
+            block_hash = insert_ledger(cur, actor=role, action="INVOICE_APPROVED", tx_id=tx_id, payload=payload)
 
-            cur.execute("UPDATE invoices SET hash = %s WHERE id = %s;", (block_hash, invc_id))
-            return {"ok": True, "id": invc_id, "tx_id": tx_id, "hash": block_hash}
+            # 3) guardar hash real
+            cur.execute("UPDATE invoices SET hash = %s WHERE id = %s;", (block_hash, invoice_id))
+            cur.execute("UPDATE inventory SET hash = %s WHERE id = %s;", (block_hash, inv_id))
+
+            return ApproveResponse(ok=True, invoice_id=invoice_id, status="APPROVED", hash=block_hash)
 
 
+@app.post("/admin/invoices/{invoice_id}/reject", response_model=ApproveResponse)
+def admin_reject(invoice_id: int, authorization: Optional[str] = Header(default=None)):
+    role = require_auth(authorization)
+    require_role(role, ["admin"])
+
+    with psycopg.connect(dsn()) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, inventory_id, status FROM invoices WHERE id = %s;", (invoice_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Factura no encontrada")
+            if str(row[2]) != "PENDING_APPROVAL":
+                raise HTTPException(status_code=409, detail="La factura no está pendiente")
+
+            inv_id = row[1]
+            cur.execute("UPDATE invoices SET status = 'REJECTED' WHERE id = %s;", (invoice_id,))
+            # liberar lote (vuelve a AVAILABLE)
+            if inv_id is not None:
+                cur.execute("UPDATE inventory SET status = 'AVAILABLE' WHERE id = %s;", (inv_id,))
+
+            return ApproveResponse(ok=True, invoice_id=invoice_id, status="REJECTED", hash=None)
+
+
+# -----------------------------
+# Ledger (auditoría)
+# -----------------------------
 @app.get("/ledger")
 def get_ledger(authorization: Optional[str] = Header(default=None)):
     role = require_auth(authorization)

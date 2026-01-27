@@ -35,7 +35,7 @@ data:
       role     TEXT NOT NULL CHECK (role IN ('bodega','oficina','admin'))
     );
 
-    -- Inventory
+    -- Inventory (Lotes)
     CREATE TABLE IF NOT EXISTS inventory (
       id       SERIAL PRIMARY KEY,
       date     DATE NOT NULL,
@@ -43,29 +43,35 @@ data:
       category TEXT NOT NULL,
       type     TEXT NOT NULL,
       qty      INT  NOT NULL,
+      status   TEXT NOT NULL DEFAULT 'AVAILABLE'
+               CHECK (status IN ('AVAILABLE','RESERVED','SOLD')),
       username TEXT NOT NULL REFERENCES users(username),
-      hash     TEXT NOT NULL
+      hash     TEXT NOT NULL DEFAULT 'PENDING'
     );
 
-    -- Invoices
+    -- Invoices (nacen desde un lote seleccionado)
     CREATE TABLE IF NOT EXISTS invoices (
-      id       SERIAL PRIMARY KEY,
-      date     DATE NOT NULL,
-      client   TEXT NOT NULL,
-      total    NUMERIC(12,2) NOT NULL,
-      username TEXT NOT NULL REFERENCES users(username),
-      hash     TEXT NOT NULL
+      id          SERIAL PRIMARY KEY,
+      inventory_id INT NOT NULL REFERENCES inventory(id),
+      date        DATE NOT NULL,
+      client      TEXT NOT NULL,
+      total       NUMERIC(12,2) NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'PENDING_APPROVAL'
+                  CHECK (status IN ('PENDING_APPROVAL','APPROVED','REJECTED')),
+      username    TEXT NOT NULL REFERENCES users(username),
+      hash        TEXT NOT NULL DEFAULT 'PENDING'
     );
 
-    -- Ledger (blockchain simple)
+    -- Ledger (blockchain simple) - CORREGIDO: incluye payload_json
     CREATE TABLE IF NOT EXISTS ledger (
-      id        SERIAL PRIMARY KEY,
-      ts        TIMESTAMPTZ NOT NULL,
-      actor     TEXT NOT NULL,
-      action    TEXT NOT NULL,
-      tx_id     TEXT NOT NULL,
-      prev_hash TEXT NOT NULL,
-      hash      TEXT NOT NULL
+      id          SERIAL PRIMARY KEY,
+      ts          TIMESTAMPTZ NOT NULL,
+      actor       TEXT NOT NULL,
+      action      TEXT NOT NULL,
+      tx_id       TEXT NOT NULL,
+      prev_hash   TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      hash        TEXT NOT NULL
     );
 
     -- Seed users (password vacío por ahora)
@@ -75,23 +81,21 @@ data:
       ('admin','',  'admin')
     ON CONFLICT (username) DO NOTHING;
 
-    -- Seed inventory
-    INSERT INTO inventory(date,item,category,type,qty,username,hash) VALUES
-      ('2023-10-24','Fertilizante NPK','Fertilizante','Entrada',50,'bodega','8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4'),
-      ('2023-10-25','Semilla Cacao CCN-51','Semilla','Salida',12,'bodega','e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+    -- Seed inventory (Lotes disponibles)
+    INSERT INTO inventory(date,item,category,type,qty,status,username,hash) VALUES
+      ('2023-10-24','Lote-CCN51-0001','Cacao CCN-51','Entrada',50,'AVAILABLE','bodega','PENDING'),
+      ('2023-10-25','Lote-CCN51-0002','Cacao CCN-51','Entrada',12,'AVAILABLE','bodega','PENDING')
     ON CONFLICT DO NOTHING;
 
-    -- Seed invoices
-    INSERT INTO invoices(date,client,total,username,hash) VALUES
-      ('2023-10-24','Comprador Local',4500.00,'oficina','a1b2c3d4e5f67890123456789abcdef1234567890abcdef1234567890abcde'),
-      ('2023-10-25','Consumidor Final',120.50,'oficina','f1e2d3c4b5a69870123456789abcdef1234567890abcdef1234567890abcde')
+    -- Seed invoices (Pendientes de aprobación - nacen desde un lote)
+    INSERT INTO invoices(inventory_id,date,client,total,status,username,hash) VALUES
+      (1,'2023-10-26','Comprador Local',4500.00,'PENDING_APPROVAL','oficina','PENDING'),
+      (2,'2023-10-27','Consumidor Final',120.50,'PENDING_APPROVAL','oficina','PENDING')
     ON CONFLICT DO NOTHING;
 
-    -- Seed ledger (genesis + 2 bloques)
-    INSERT INTO ledger(ts,actor,action,tx_id,prev_hash,hash) VALUES
-      ('2023-10-24T08:30:00Z','system','INIT_GENESIS','TX_0000','0000000000000000','INIT_HASH_GENESIS_BLOCK_SECURE'),
-      ('2023-10-24T09:15:22Z','bodega','INV_ADD','TX_3921','INIT_HASH_GENESIS_BLOCK_SECURE','8f434346648f6b96df89dda901c5'),
-      ('2023-10-25T10:00:01Z','oficina','INV_CREATE','TX_4022','8f434346648f6b96df89dda901c5','a1b2c3d4e5f67890123456789abc')
+    -- Seed ledger (solo genesis, opcional)
+    INSERT INTO ledger(ts,actor,action,tx_id,prev_hash,payload_json,hash) VALUES
+      ('2023-10-24T08:30:00Z','system','INIT_GENESIS','TX_0000','0000000000000000','{}','INIT_HASH_GENESIS_BLOCK_SECURE')
     ON CONFLICT DO NOTHING;
 ---
 apiVersion: apps/v1

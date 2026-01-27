@@ -1,11 +1,46 @@
-body { font-family: 'Inter', sans-serif; background-color: #f8fafc; }
+/* Base */
+body {
+  font-family: 'Inter', sans-serif;
+  /* crema suave */
+  background-color: #faf7f2;
+  color: #1f2937;
+}
+
 .font-mono { font-family: 'JetBrains Mono', monospace; }
 
+/* Brand helpers (cacao) */
+:root{
+  --cacao-50:  #faf7f2;
+  --cacao-100: #f3eadb;
+  --cacao-200: #e6d2b4;
+  --cacao-300: #d6b98c;
+  --cacao-600: #8b5e34;   /* primary sugerido */
+  --cacao-700: #6f4726;   /* hover */
+  --cacao-900: #3b2516;
+}
+
+/* Útil si quieres un “chip” de marca alrededor del icono */
+.brand-chip{
+  background: rgba(139, 94, 52, 0.12);
+  border: 1px solid rgba(139, 94, 52, 0.20);
+  color: var(--cacao-700);
+}
+
+/* Sombras más cálidas */
+.shadow-warm{
+  box-shadow: 0 10px 25px rgba(59, 37, 22, 0.08);
+}
+
 /* Scrollbar */
-::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+::-webkit-scrollbar-thumb {
+  background: rgba(139, 94, 52, 0.28);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(111, 71, 38, 0.42);
+}
 
 /* Animations */
 .fade-in { animation: fadeIn 0.3s ease-in-out; }
@@ -19,4 +54,3 @@ body { font-family: 'Inter', sans-serif; background-color: #f8fafc; }
   from { opacity: 0; transform: scale(0.95); }
   to { opacity: 1; transform: scale(1); }
 }
-

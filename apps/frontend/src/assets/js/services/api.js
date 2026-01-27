@@ -24,7 +24,6 @@ window.api = (function () {
         body: body !== null ? JSON.stringify(body) : null,
       });
     } catch (e) {
-      // Error de red / proxy / ingress / service
       throw new Error("No se pudo conectar con la API (/api). Revisa Ingress/port-forward y el proxy del frontend.");
     }
 
@@ -52,6 +51,22 @@ window.api = (function () {
     return { role: u, token: `mock-${u}` };
   }
 
+  // Helpers mock: evita que se rompa si no están definidos
+  function mockInventory() {
+    return (state?.data?.inventory || []).map((x) => ({
+      ...x,
+      status: x.status || "AVAILABLE",
+    }));
+  }
+
+  function mockInvoices() {
+    return (state?.data?.invoices || []).map((x) => ({
+      ...x,
+      status: x.status || "PENDING_APPROVAL",
+      hash: x.hash || "PENDING",
+    }));
+  }
+
   return {
     async health() {
       return await request("/health", { auth: false });
@@ -62,28 +77,62 @@ window.api = (function () {
       return await request("/auth/login", { method: "POST", body: { username, password }, auth: false });
     },
 
+    // -----------------------------
+    // BODEGA: LOTES
+    // -----------------------------
     async getInventory() {
-      if (cfg.USE_MOCK) return state.data.inventory;
+      if (cfg.USE_MOCK) return mockInventory().filter((x) => (x.status || "AVAILABLE") === "AVAILABLE");
       return await request("/inventory");
     },
 
+    // payload esperado: {date,item,category,qty}
     async createInventory(payload) {
-      if (cfg.USE_MOCK) return { ok: true, id: Date.now(), tx_id: "MOCK_INV", hash: "mock-hash" };
+      if (cfg.USE_MOCK) return { ok: true, id: Date.now() };
       return await request("/inventory", { method: "POST", body: payload });
     },
 
+    // -----------------------------
+    // OFICINA: LOTES DISPONIBLES -> FACTURA PENDIENTE
+    // -----------------------------
+    async getAvailableLots() {
+      if (cfg.USE_MOCK) return mockInventory().filter((x) => (x.status || "AVAILABLE") === "AVAILABLE");
+      return await request("/lots/available");
+    },
+
     async getInvoices() {
-      if (cfg.USE_MOCK) return state.data.invoices;
+      if (cfg.USE_MOCK) return mockInvoices();
       return await request("/invoices");
     },
 
+    // payload esperado: {inventory_id,date,client,total}
     async createInvoice(payload) {
-      if (cfg.USE_MOCK) return { ok: true, id: Date.now(), tx_id: "MOCK_BILL", hash: "mock-hash" };
+      if (cfg.USE_MOCK) return { ok: true, id: Date.now() };
       return await request("/invoices", { method: "POST", body: payload });
     },
 
+    // -----------------------------
+    // ADMIN: PENDIENTES + APROBAR/RECHAZAR
+    // -----------------------------
+    async getPendingApprovals() {
+      if (cfg.USE_MOCK) return mockInvoices().filter((x) => (x.status || "PENDING_APPROVAL") === "PENDING_APPROVAL");
+      return await request("/admin/pending");
+    },
+
+    async approveInvoice(id) {
+      if (cfg.USE_MOCK) return { ok: true, id, tx_id: "MOCK_TX", hash: "mock-hash" };
+      return await request(`/admin/invoices/${id}/approve`, { method: "POST" });
+    },
+
+    async rejectInvoice(id) {
+      if (cfg.USE_MOCK) return { ok: true, id };
+      return await request(`/admin/invoices/${id}/reject`, { method: "POST" });
+    },
+
+    // -----------------------------
+    // LEDGER (solo admin)
+    // -----------------------------
     async getLedger() {
-      if (cfg.USE_MOCK) return state.data.ledger;
+      if (cfg.USE_MOCK) return state?.data?.ledger || [];
       return await request("/ledger");
     },
 

@@ -4,6 +4,24 @@ window.appRender = async function () {
   if (!app) return;
 
   try {
+    // Intenta reconstruir usuario si hay sesión pero no hay currentUser
+    if (!state.currentUser) {
+      const role =
+        (state.role || state.currentRole || state.userRole || localStorage.getItem(state.roleKey) || "").toLowerCase();
+
+      const tkn =
+        (localStorage.getItem(state.tokenKey) || "").trim();
+
+      if (role && tkn) {
+        // nombre bonito
+        const pretty =
+          roles?.[role]?.name ||
+          (role === "bodega" ? "Empleado Bodega" : role === "oficina" ? "Empleado Oficina" : role === "admin" ? "Administrador" : role);
+
+        state.currentUser = { name: pretty, role };
+      }
+    }
+
     // Decide view
     if (!state.currentUser) {
       app.innerHTML = views.login.render();
@@ -45,6 +63,8 @@ window.appRender = async function () {
     $("#btnRetry")?.addEventListener("click", () => window.appRender());
     $("#btnForceLogout")?.addEventListener("click", () => {
       session.clear();
+      state.currentUser = null;
+      state.activeView = null;
       window.appRender();
     });
   }
